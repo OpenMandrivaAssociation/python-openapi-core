@@ -1,0 +1,926 @@
+diff -up python-openapi-core-0.22.0/openapi_core/__init__.py.1~ python-openapi-core-0.22.0/openapi_core/__init__.py
+--- python-openapi-core-0.22.0/openapi_core/__init__.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/__init__.py	2026-03-01 14:51:04.674250070 +0100
+@@ -14,7 +14,6 @@ from openapi_core.shortcuts import valid
+ from openapi_core.shortcuts import validate_response
+ from openapi_core.shortcuts import validate_webhook_request
+ from openapi_core.shortcuts import validate_webhook_response
+-from openapi_core.spec.paths import Spec
+ from openapi_core.unmarshalling.request import V3RequestUnmarshaller
+ from openapi_core.unmarshalling.request import V3WebhookRequestUnmarshaller
+ from openapi_core.unmarshalling.request import V30RequestUnmarshaller
+@@ -45,7 +44,6 @@ __license__ = "BSD 3-Clause License"
+ __all__ = [
+     "OpenAPI",
+     "Config",
+-    "Spec",
+     "unmarshal_request",
+     "unmarshal_response",
+     "unmarshal_apicall_request",
+diff -up python-openapi-core-0.22.0/openapi_core/app.py.1~ python-openapi-core-0.22.0/openapi_core/app.py
+--- python-openapi-core-0.22.0/openapi_core/app.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/app.py	2026-03-01 14:51:04.674295521 +0100
+@@ -305,7 +305,7 @@ class OpenAPI:
+ 
+     def _get_version(self) -> SpecVersion:
+         try:
+-            return get_spec_version(self.spec.contents())
++            return get_spec_version(self.spec.read_value())
+         # backward compatibility
+         except OpenAPIVersionNotFound:
+             raise SpecError("Spec schema version not detected")
+@@ -320,7 +320,7 @@ class OpenAPI:
+ 
+         try:
+             validate(
+-                self.spec.contents(),
++                self.spec.read_value(),
+                 base_uri=self.config.spec_base_uri
+                 or self.spec.accessor.resolver._base_uri,  # type: ignore[attr-defined]
+                 cls=cls,
+diff -up python-openapi-core-0.22.0/openapi_core/casting/schemas/casters.py.1~ python-openapi-core-0.22.0/openapi_core/casting/schemas/casters.py
+--- python-openapi-core-0.22.0/openapi_core/casting/schemas/casters.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/casting/schemas/casters.py	2026-03-01 14:51:04.674355522 +0100
+@@ -132,9 +132,7 @@ class ObjectCaster(PrimitiveCaster):
+         if schema_only:
+             return value
+ 
+-        additional_properties = self.schema.getkey(
+-            "additionalProperties", True
+-        )
++        additional_properties = self.schema.get("additionalProperties", True)
+         if additional_properties is not False:
+             # free-form object
+             if additional_properties is True:
+@@ -199,11 +197,12 @@ class SchemaCaster:
+ 
+     def cast(self, value: Any) -> Any:
+         # skip casting for nullable in OpenAPI 3.0
+-        if value is None and self.schema.getkey("nullable", False):
++        if value is None and (self.schema / "nullable").read_bool(
++            default=False
++        ):
+             return value
+ 
+-        schema_type = self.schema.getkey("type")
+-
++        schema_type = (self.schema / "type").read_str(None)
+         type_caster = self.get_type_caster(schema_type)
+ 
+         if value is None:
+@@ -211,8 +210,8 @@ class SchemaCaster:
+ 
+         try:
+             return type_caster(value)
+-        except (ValueError, TypeError):
+-            raise CastError(value, schema_type)
++        except (ValueError, TypeError) as exc:
++            raise CastError(value, schema_type) from exc
+ 
+     def get_type_caster(
+         self,
+diff -up python-openapi-core-0.22.0/openapi_core/casting/schemas/exceptions.py.1~ python-openapi-core-0.22.0/openapi_core/casting/schemas/exceptions.py
+--- python-openapi-core-0.22.0/openapi_core/casting/schemas/exceptions.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/casting/schemas/exceptions.py	2026-03-01 14:51:04.674389472 +0100
+@@ -9,7 +9,7 @@ class CastError(DeserializeError):
+     """Schema cast operation error"""
+ 
+     value: Any
+-    type: str
++    type: str | None
+ 
+     def __str__(self) -> str:
+         return f"Failed to cast value to {self.type} type: {self.value}"
+diff -up python-openapi-core-0.22.0/openapi_core/deserializing/media_types/deserializers.py.1~ python-openapi-core-0.22.0/openapi_core/deserializing/media_types/deserializers.py
+--- python-openapi-core-0.22.0/openapi_core/deserializing/media_types/deserializers.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/deserializing/media_types/deserializers.py	2026-03-01 14:51:04.674423372 +0100
+@@ -237,7 +237,7 @@ class MediaTypeDeserializer:
+             prop_schema,
+             mimetype=prop_content_type,
+         )
+-        prop_schema_type = prop_schema.getkey("type", "")
++        prop_schema_type = (prop_schema / "type").read_str("")
+         if (
+             self.mimetype.startswith("multipart")
+             and prop_schema_type == "array"
+diff -up python-openapi-core-0.22.0/openapi_core/deserializing/styles/casters.py.1~ python-openapi-core-0.22.0/openapi_core/deserializing/styles/casters.py
+--- python-openapi-core-0.22.0/openapi_core/deserializing/styles/casters.py.1~	2026-03-01 14:51:04.674469553 +0100
++++ python-openapi-core-0.22.0/openapi_core/deserializing/styles/casters.py	2026-03-01 14:51:04.674466023 +0100
+@@ -0,0 +1,55 @@
++from typing import Any
++
++from jsonschema_path import SchemaPath
++
++from openapi_core.util import forcebool
++
++
++def cast_primitive(value: Any, schema: SchemaPath) -> Any:
++    """Cast a primitive value based on schema type."""
++    schema_type = (schema / "type").read_str("")
++
++    if schema_type == "integer":
++        return int(value)
++    elif schema_type == "number":
++        return float(value)
++    elif schema_type == "boolean":
++        return forcebool(value)
++
++    return value
++
++
++def cast_value(value: Any, schema: SchemaPath, cast: bool) -> Any:
++    """Recursively cast a value based on schema."""
++    if not cast:
++        return value
++
++    schema_type = (schema / "type").read_str("")
++
++    # Handle arrays
++    if schema_type == "array":
++        if not isinstance(value, list):
++            raise ValueError(
++                f"Expected list for array type, got {type(value)}"
++            )
++        items_schema = schema.get("items", SchemaPath.from_dict({}))
++        return [cast_value(item, items_schema, cast) for item in value]
++
++    # Handle objects
++    if schema_type == "object":
++        if not isinstance(value, dict):
++            raise ValueError(
++                f"Expected dict for object type, got {type(value)}"
++            )
++        properties = schema.get("properties", SchemaPath.from_dict({}))
++        result = {}
++        for key, val in value.items():
++            if key in properties:
++                prop_schema = schema / "properties" / key
++                result[key] = cast_value(val, prop_schema, cast)
++            else:
++                result[key] = val
++        return result
++
++    # Handle primitives
++    return cast_primitive(value, schema)
+diff -up python-openapi-core-0.22.0/openapi_core/deserializing/styles/deserializers.py.1~ python-openapi-core-0.22.0/openapi_core/deserializing/styles/deserializers.py
+--- python-openapi-core-0.22.0/openapi_core/deserializing/styles/deserializers.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/deserializing/styles/deserializers.py	2026-03-01 14:51:04.674503944 +0100
+@@ -25,7 +25,7 @@ class StyleDeserializer:
+         self.explode = explode
+         self.name = name
+         self.schema = schema
+-        self.schema_type = schema.getkey("type", "")
++        self.schema_type = (schema / "type").read_str("")
+         self.caster = caster
+         self.deserializer_callable = deserializer_callable
+ 
+diff -up python-openapi-core-0.22.0/openapi_core/extensions/models/factories.py.1~ python-openapi-core-0.22.0/openapi_core/extensions/models/factories.py
+--- python-openapi-core-0.22.0/openapi_core/extensions/models/factories.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/extensions/models/factories.py	2026-03-01 14:51:04.674534224 +0100
+@@ -27,7 +27,7 @@ class ModelFactory(DictFactory):
+         schema: SchemaPath,
+         fields: Iterable[Field],
+     ) -> Type[Any]:
+-        name = schema.getkey("x-model")
++        name = (schema / "x-model").read_str(None)
+         if name is None:
+             return super().create(schema, fields)
+ 
+@@ -40,7 +40,7 @@ class ModelPathFactory(ModelFactory):
+         schema: SchemaPath,
+         fields: Iterable[Field],
+     ) -> Any:
+-        model_class_path = schema.getkey("x-model-path")
++        model_class_path = (schema / "x-model-path").read_str(None)
+         if model_class_path is None:
+             return super().create(schema, fields)
+ 
+diff -up python-openapi-core-0.22.0/openapi_core/schema/encodings.py.1~ python-openapi-core-0.22.0/openapi_core/schema/encodings.py
+--- python-openapi-core-0.22.0/openapi_core/schema/encodings.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/schema/encodings.py	2026-03-01 14:51:04.674559644 +0100
+@@ -22,11 +22,11 @@ def get_default_content_type(
+     if prop_schema is None:
+         return "text/plain"
+ 
+-    prop_type = prop_schema.getkey("type")
++    prop_type = (prop_schema / "type").read_str(None)
+     if prop_type is None:
+         return "text/plain" if encoding else "application/octet-stream"
+ 
+-    prop_format = prop_schema.getkey("format")
++    prop_format = (prop_schema / "format").read_str(None)
+     if prop_type == "string" and prop_format in ["binary", "base64"]:
+         return "application/octet-stream"
+ 
+diff -up python-openapi-core-0.22.0/openapi_core/schema/parameters.py.1~ python-openapi-core-0.22.0/openapi_core/schema/parameters.py
+--- python-openapi-core-0.22.0/openapi_core/schema/parameters.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/schema/parameters.py	2026-03-01 14:51:04.674580665 +0100
+@@ -11,7 +11,7 @@ def get_style(
+         assert isinstance(param_or_header["style"], str)
+         return param_or_header["style"]
+ 
+-    location = param_or_header.getkey("in", default_location)
++    location = (param_or_header / "in").read_str(default=default_location)
+ 
+     # determine default
+     return "simple" if location in ["path", "header"] else "form"
+diff -up python-openapi-core-0.22.0/openapi_core/schema/schemas.py.1~ python-openapi-core-0.22.0/openapi_core/schema/schemas.py
+--- python-openapi-core-0.22.0/openapi_core/schema/schemas.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/schema/schemas.py	2026-03-01 14:51:04.674600275 +0100
+@@ -5,6 +5,6 @@ from jsonschema_path import SchemaPath
+ 
+ 
+ def get_properties(schema: SchemaPath) -> Dict[str, Any]:
+-    properties = schema.get("properties", {})
++    properties = schema.get("properties", SchemaPath.from_dict({}))
+     properties_dict = dict(list(properties.items()))
+     return properties_dict
+diff -up python-openapi-core-0.22.0/openapi_core/schema/servers.py.1~ python-openapi-core-0.22.0/openapi_core/schema/servers.py
+--- python-openapi-core-0.22.0/openapi_core/schema/servers.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/schema/servers.py	2026-03-01 14:51:04.674621555 +0100
+@@ -14,7 +14,7 @@ def get_server_default_variables(server:
+ 
+     defaults = {}
+     variables = server / "variables"
+-    for name, variable in list(variables.items()):
++    for name, variable in list(variables.str_items()):
+         defaults[name] = variable["default"]
+     return defaults
+ 
+diff -up python-openapi-core-0.22.0/openapi_core/security/factories.py.1~ python-openapi-core-0.22.0/openapi_core/security/factories.py
+--- python-openapi-core-0.22.0/openapi_core/security/factories.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/security/factories.py	2026-03-01 14:51:04.674645135 +0100
+@@ -19,6 +19,6 @@ class SecurityProviderFactory:
+     }
+ 
+     def create(self, scheme: SchemaPath) -> Any:
+-        scheme_type = scheme["type"]
++        scheme_type = (scheme / "type").read_str()
+         provider_class = self.PROVIDERS[scheme_type]
+         return provider_class(scheme)
+diff -up python-openapi-core-0.22.0/openapi_core/security/providers.py.1~ python-openapi-core-0.22.0/openapi_core/security/providers.py
+--- python-openapi-core-0.22.0/openapi_core/security/providers.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/security/providers.py	2026-03-01 14:51:04.674666946 +0100
+@@ -22,8 +22,8 @@ class UnsupportedProvider(BaseProvider):
+ 
+ class ApiKeyProvider(BaseProvider):
+     def __call__(self, parameters: RequestParameters) -> Any:
+-        name = self.scheme["name"]
+-        location = self.scheme["in"]
++        name = (self.scheme / "name").read_str()
++        location = (self.scheme / "in").read_str()
+         source = getattr(parameters, location)
+         if name not in source:
+             raise SecurityProviderError("Missing api key parameter.")
+diff -up python-openapi-core-0.22.0/openapi_core/spec/__init__.py.1~ python-openapi-core-0.22.0/openapi_core/spec/__init__.py
+diff -up python-openapi-core-0.22.0/openapi_core/spec/paths.py.1~ python-openapi-core-0.22.0/openapi_core/spec/paths.py
+diff -up python-openapi-core-0.22.0/openapi_core/templating/media_types/finders.py.1~ python-openapi-core-0.22.0/openapi_core/templating/media_types/finders.py
+--- python-openapi-core-0.22.0/openapi_core/templating/media_types/finders.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/templating/media_types/finders.py	2026-03-01 14:51:04.674738137 +0100
+@@ -32,11 +32,11 @@ class MediaTypeFinder:
+ 
+         # range mime type
+         if mime_type:
+-            for key, value in self.content.items():
++            for key, value in self.content.str_items():
+                 if fnmatch.fnmatch(mime_type, key):
+                     return MediaType(key, parameters, value)
+ 
+-        raise MediaTypeNotFound(mimetype, list(self.content.keys()))
++        raise MediaTypeNotFound(mimetype, list(self.content.str_keys()))
+ 
+     def _parse_mimetype(self, mimetype: str) -> Tuple[str, Mapping[str, str]]:
+         mimetype_parts = mimetype.split(";")
+diff -up python-openapi-core-0.22.0/openapi_core/templating/paths/iterators.py.1~ python-openapi-core-0.22.0/openapi_core/templating/paths/iterators.py
+--- python-openapi-core-0.22.0/openapi_core/templating/paths/iterators.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/templating/paths/iterators.py	2026-03-01 14:51:04.674774847 +0100
+@@ -27,7 +27,7 @@ class SimplePathsIterator:
+         paths = spec / self.paths_part
+         if not paths.exists():
+             raise PathsNotFound(paths.as_uri())
+-        for path_name, path in list(paths.items()):
++        for path_name, path in list(paths.str_items()):
+             if name == path_name:
+                 path_result = TemplateResult(path_name, {})
+                 yield Path(path, path_result)
+@@ -44,7 +44,7 @@ class TemplatePathsIterator:
+         if not paths.exists():
+             raise PathsNotFound(paths.as_uri())
+         template_paths: List[Path] = []
+-        for path_pattern, path in list(paths.items()):
++        for path_pattern, path in list(paths.str_items()):
+             # simple path.
+             # Return right away since it is always the most concrete
+             if name.endswith(path_pattern):
+diff -up python-openapi-core-0.22.0/openapi_core/templating/responses/finders.py.1~ python-openapi-core-0.22.0/openapi_core/templating/responses/finders.py
+--- python-openapi-core-0.22.0/openapi_core/templating/responses/finders.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/templating/responses/finders.py	2026-03-01 14:51:04.674805188 +0100
+@@ -17,6 +17,8 @@ class ResponseFinder:
+             return self.responses / http_status_range
+ 
+         if "default" not in self.responses:
+-            raise ResponseNotFound(http_status, list(self.responses.keys()))
++            raise ResponseNotFound(
++                http_status, list(self.responses.str_keys())
++            )
+ 
+         return self.responses / "default"
+diff -up python-openapi-core-0.22.0/openapi_core/unmarshalling/schemas/factories.py.1~ python-openapi-core-0.22.0/openapi_core/unmarshalling/schemas/factories.py
+--- python-openapi-core-0.22.0/openapi_core/unmarshalling/schemas/factories.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/unmarshalling/schemas/factories.py	2026-03-01 14:51:04.674836758 +0100
+@@ -43,7 +43,7 @@ class SchemaUnmarshallersFactory:
+         if schema is None:
+             raise TypeError("Invalid schema")
+ 
+-        if schema.getkey("deprecated", False):
++        if (schema / "deprecated").read_bool(default=False):
+             warnings.warn("The schema is deprecated", DeprecationWarning)
+ 
+         if extra_format_validators is None:
+@@ -54,7 +54,7 @@ class SchemaUnmarshallersFactory:
+             extra_format_validators=extra_format_validators,
+         )
+ 
+-        schema_format = schema.getkey("format")
++        schema_format = (schema / "format").read_str(None)
+ 
+         formats_unmarshaller = FormatsUnmarshaller(
+             format_unmarshallers or self.format_unmarshallers,
+diff -up python-openapi-core-0.22.0/openapi_core/unmarshalling/schemas/unmarshallers.py.1~ python-openapi-core-0.22.0/openapi_core/unmarshalling/schemas/unmarshallers.py
+--- python-openapi-core-0.22.0/openapi_core/unmarshalling/schemas/unmarshallers.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/unmarshalling/schemas/unmarshallers.py	2026-03-01 14:51:04.674874159 +0100
+@@ -109,9 +109,7 @@ class ObjectUnmarshaller(PrimitiveUnmars
+         if schema_only:
+             return properties
+ 
+-        additional_properties = self.schema.getkey(
+-            "additionalProperties", True
+-        )
++        additional_properties = self.schema.get("additionalProperties", True)
+         if additional_properties is not False:
+             # free-form object
+             if additional_properties is True:
+@@ -244,10 +242,12 @@ class SchemaUnmarshaller:
+         self.schema_validator.validate(value)
+ 
+         # skip unmarshalling for nullable in OpenAPI 3.0
+-        if value is None and self.schema.getkey("nullable", False):
++        if value is None and (self.schema / "nullable").read_bool(
++            default=False
++        ):
+             return value
+ 
+-        schema_type = self.schema.getkey("type")
++        schema_type = (self.schema / "type").read_str_or_list(None)
+         type_unmarshaller = self.get_type_unmarshaller(schema_type)
+         typed = type_unmarshaller(value)
+         # skip finding format for None
+@@ -307,5 +307,5 @@ class SchemaUnmarshaller:
+             if primitive_type != "string":
+                 continue
+             if "format" in schema:
+-                return str(schema.getkey("format"))
++                return (schema / "format").read_str()
+         return None
+diff -up python-openapi-core-0.22.0/openapi_core/validation/request/exceptions.py.1~ python-openapi-core-0.22.0/openapi_core/validation/request/exceptions.py
+--- python-openapi-core-0.22.0/openapi_core/validation/request/exceptions.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/validation/request/exceptions.py	2026-03-01 14:51:04.674913119 +0100
+@@ -49,7 +49,9 @@ class ParameterValidationError(RequestVa
+ 
+     @classmethod
+     def from_spec(cls, spec: SchemaPath) -> "ParameterValidationError":
+-        return cls(spec["name"], spec["in"])
++        name = (spec / "name").read_str()
++        location = (spec / "in").read_str()
++        return cls(name, location)
+ 
+     def __str__(self) -> str:
+         return f"{self.location.title()} parameter error: {self.name}"
+diff -up python-openapi-core-0.22.0/openapi_core/validation/request/validators.py.1~ python-openapi-core-0.22.0/openapi_core/validation/request/validators.py
+--- python-openapi-core-0.22.0/openapi_core/validation/request/validators.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/validation/request/validators.py	2026-03-01 14:51:04.674953800 +0100
+@@ -153,16 +153,20 @@ class BaseRequestValidator(BaseValidator
+         operation: SchemaPath,
+         path: SchemaPath,
+     ) -> Parameters:
+-        operation_params = operation.get("parameters", [])
+-        path_params = path.get("parameters", [])
++        operation_params: SchemaPath = operation.get(
++            "parameters", SchemaPath.from_dict({})
++        )
++        path_params: SchemaPath = path.get(
++            "parameters", SchemaPath.from_dict({})
++        )
+ 
+         errors = []
+         seen = set()
+         validated = Parameters()
+         params_iter = chainiters(operation_params, path_params)
+         for param in params_iter:
+-            param_name = param["name"]
+-            param_location = param["in"]
++            param_name = (param / "name").read_str()
++            param_location = (param / "in").read_str()
+             if (param_name, param_location) in seen:
+                 # skip parameter already seen
+                 # e.g. overriden path item paremeter on operation
+@@ -193,22 +197,21 @@ class BaseRequestValidator(BaseValidator
+     def _get_parameter(
+         self, parameters: RequestParameters, param: SchemaPath
+     ) -> Any:
+-        name = param["name"]
+-        deprecated = param.getkey("deprecated", False)
++        name = (param / "name").read_str()
++        deprecated = (param / "deprecated").read_bool(default=False)
+         if deprecated:
+             warnings.warn(
+                 f"{name} parameter is deprecated",
+                 DeprecationWarning,
+             )
+ 
+-        param_location = param["in"]
++        param_location = (param / "in").read_str()
+         location = parameters[param_location]
+ 
+         try:
+             value, _ = self._get_param_or_header_and_schema(param, location)
+         except KeyError:
+-            required = param.getkey("required", False)
+-            if required:
++            if (param / "required").read_bool(default=False):
+                 raise MissingRequiredParameter(name, param_location)
+             raise MissingParameter(name, param_location)
+         else:
+@@ -230,7 +233,7 @@ class BaseRequestValidator(BaseValidator
+         schemes = []
+         for security_requirement in security:
+             try:
+-                scheme_names = list(security_requirement.keys())
++                scheme_names = list(security_requirement.str_keys())
+                 schemes.append(scheme_names)
+                 return {
+                     scheme_name: self._get_security_value(
+@@ -272,7 +275,7 @@ class BaseRequestValidator(BaseValidator
+         self, body: Optional[bytes], request_body: SchemaPath
+     ) -> bytes:
+         if not body:
+-            if request_body.getkey("required", False):
++            if (request_body / "required").read_bool(default=False):
+                 raise MissingRequiredRequestBody
+             raise MissingRequestBody
+         return body
+diff -up python-openapi-core-0.22.0/openapi_core/validation/response/validators.py.1~ python-openapi-core-0.22.0/openapi_core/validation/response/validators.py
+--- python-openapi-core-0.22.0/openapi_core/validation/response/validators.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/validation/response/validators.py	2026-03-01 14:51:04.675015480 +0100
+@@ -147,11 +147,9 @@ class BaseResponseValidator(BaseValidato
+         if "headers" not in operation_response:
+             return {}
+ 
+-        response_headers = operation_response / "headers"
+-
+         errors: List[OpenAPIError] = []
+         validated: Dict[str, Any] = {}
+-        for name, header in list(response_headers.items()):
++        for name, header in (operation_response / "headers").str_items():
+             # ignore Content-Type header
+             if name.lower() == "content-type":
+                 continue
+@@ -174,7 +172,7 @@ class BaseResponseValidator(BaseValidato
+     def _get_header(
+         self, headers: Mapping[str, Any], name: str, header: SchemaPath
+     ) -> Any:
+-        deprecated = header.getkey("deprecated", False)
++        deprecated = (header / "deprecated").read_bool(default=False)
+         if deprecated:
+             warnings.warn(
+                 f"{name} header is deprecated",
+@@ -186,7 +184,7 @@ class BaseResponseValidator(BaseValidato
+                 header, headers, name=name
+             )
+         except KeyError:
+-            required = header.getkey("required", False)
++            required = (header / "required").read_bool(default=False)
+             if required:
+                 raise MissingRequiredHeader(name)
+             raise MissingHeader(name)
+diff -up python-openapi-core-0.22.0/openapi_core/validation/schemas/exceptions.py.1~ python-openapi-core-0.22.0/openapi_core/validation/schemas/exceptions.py
+--- python-openapi-core-0.22.0/openapi_core/validation/schemas/exceptions.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/validation/schemas/exceptions.py	2026-03-01 14:51:04.675055371 +0100
+@@ -14,7 +14,7 @@ class InvalidSchemaValue(ValidateError):
+     """Value not valid for schema"""
+ 
+     value: str
+-    type: str
++    type: str | list[str]
+     schema_errors: Iterable[Exception] = field(default_factory=list)
+ 
+     def __str__(self) -> str:
+diff -up python-openapi-core-0.22.0/openapi_core/validation/schemas/validators.py.1~ python-openapi-core-0.22.0/openapi_core/validation/schemas/validators.py
+--- python-openapi-core-0.22.0/openapi_core/validation/schemas/validators.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/validation/schemas/validators.py	2026-03-01 14:51:04.675092152 +0100
+@@ -36,7 +36,7 @@ class SchemaValidator:
+         errors_iter = self.validator.iter_errors(value)
+         errors = tuple(errors_iter)
+         if errors:
+-            schema_type = self.schema.getkey("type", "any")
++            schema_type = (self.schema / "type").read_str_or_list("any")
+             raise InvalidSchemaValue(value, schema_type, schema_errors=errors)
+ 
+     def evolve(self, schema: SchemaPath) -> "SchemaValidator":
+@@ -67,7 +67,7 @@ class SchemaValidator:
+     def get_type_validator_callable(
+         self, type_override: Optional[str] = None
+     ) -> FormatValidator:
+-        schema_type = type_override or self.schema.getkey("type")
++        schema_type = type_override or (self.schema / "type").read_str(None)
+         if schema_type in self.validator.TYPE_CHECKER._type_checkers:
+             return partial(
+                 self.validator.TYPE_CHECKER.is_type, type=schema_type
+@@ -77,7 +77,7 @@ class SchemaValidator:
+ 
+     @cached_property
+     def format_validator_callable(self) -> FormatValidator:
+-        schema_format = self.schema.getkey("format")
++        schema_format = (self.schema / "format").read_str(None)
+         if schema_format in self.validator.format_checker.checkers:
+             return partial(
+                 self.validator.format_checker.check, format=schema_format
+@@ -86,7 +86,7 @@ class SchemaValidator:
+         return lambda x: True
+ 
+     def get_primitive_type(self, value: Any) -> Optional[str]:
+-        schema_types = self.schema.getkey("type")
++        schema_types = (self.schema / "type").read_str_or_list(None)
+         if isinstance(schema_types, str):
+             return schema_types
+         if schema_types is None:
+diff -up python-openapi-core-0.22.0/openapi_core/validation/validators.py.1~ python-openapi-core-0.22.0/openapi_core/validation/validators.py
+--- python-openapi-core-0.22.0/openapi_core/validation/validators.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/openapi_core/validation/validators.py	2026-03-01 14:51:04.675129072 +0100
+@@ -157,7 +157,7 @@ class BaseValidator:
+         location: Mapping[str, Any],
+         name: Optional[str] = None,
+     ) -> Any:
+-        name = name or param_or_header["name"]
++        name = name or (param_or_header / "name").read_str()
+         style, explode = get_style_and_explode(param_or_header)
+         schema = param_or_header / "schema"
+         deserializer = self.style_deserializers_factory.create(
+@@ -202,7 +202,9 @@ class BaseValidator:
+         location: Mapping[str, Any],
+         name: Optional[str] = None,
+     ) -> Tuple[Any, SchemaPath]:
+-        allow_empty_values = param_or_header.getkey("allowEmptyValue")
++        allow_empty_values = (param_or_header / "allowEmptyValue").read_bool(
++            default=None
++        )
+         if allow_empty_values:
+             warnings.warn(
+                 "Use of allowEmptyValue property is deprecated",
+@@ -225,13 +227,13 @@ class BaseValidator:
+             )
+         if allow_empty_values is None or not allow_empty_values:
+             # if "in" not defined then it's a Header
+-            location_name = param_or_header.getkey("in", "header")
++            location_name = (param_or_header / "in").read_str("header")
+             if (
+                 location_name == "query"
+                 and deserialised == ""
+                 and not allow_empty_values
+             ):
+-                param_or_header_name = param_or_header["name"]
++                param_or_header_name = (param_or_header / "name").read_str()
+                 raise EmptyQueryParameterValue(param_or_header_name)
+         return deserialised, schema
+ 
+@@ -283,7 +285,7 @@ class BaseValidator:
+         location: Mapping[str, Any],
+         name: Optional[str] = None,
+     ) -> Any:
+-        name = name or param_or_header["name"]
++        name = name or (param_or_header / "name").read_str()
+         return location[name]
+ 
+ 
+diff -up python-openapi-core-0.22.0/pyproject.toml.1~ python-openapi-core-0.22.0/pyproject.toml
+--- python-openapi-core-0.22.0/pyproject.toml.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/pyproject.toml	2026-03-01 14:51:36.590159347 +0100
+@@ -69,10 +69,10 @@ starlette = {version = ">=0.26.1,<0.50.0
+ isodate = "*"
+ more-itertools = "*"
+ openapi-schema-validator = "^0.6.0"
+-openapi-spec-validator = "^0.7.1"
++openapi-spec-validator = {version = "^0.8.0b3", allow-prereleases = true}
+ requests = {version = "*", optional = true}
+ werkzeug = ">=2.1.0"
+-jsonschema-path = "^0.3.4"
++jsonschema-path = {version = "^0.4.0b8", allow-prereleases = true}
+ jsonschema = "^4.23.0"
+ multidict = {version = "^6.0.4", optional = true}
+ aioitertools = {version = ">=0.11,<0.14", optional = true}
+@@ -112,6 +112,7 @@ pytest-aiohttp = "^1.1.0"
+ pyflakes = "^3.1.0"
+ fastapi = ">=0.111,<0.125"
+ tbump = "^6.11.0"
++ipykernel = "^7.2.0"
+ 
+ [tool.poetry.group.docs.dependencies]
+ mkdocs = "^1.6.1"
+diff -up python-openapi-core-0.22.0/tests/integration/conftest.py.1~ python-openapi-core-0.22.0/tests/integration/conftest.py
+--- python-openapi-core-0.22.0/tests/integration/conftest.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/tests/integration/conftest.py	2026-03-01 14:51:04.675470217 +0100
+@@ -7,8 +7,6 @@ from jsonschema_path import SchemaPath
+ from openapi_spec_validator.readers import read_from_filename
+ from yaml import safe_load
+ 
+-from openapi_core import Spec
+-
+ 
+ def content_from_file(spec_file):
+     directory = path.abspath(path.dirname(__file__))
+@@ -27,16 +25,6 @@ def schema_path_from_url(base_uri):
+     return SchemaPath.from_dict(spec_dict, base_uri=base_uri)
+ 
+ 
+-def spec_from_file(spec_file):
+-    schema_path = schema_path_from_file(spec_file)
+-    return Spec(schema_path)
+-
+-
+-def spec_from_url(base_uri):
+-    schema_path = schema_path_from_url(base_uri)
+-    return Spec(schema_path)
+-
+-
+ @pytest.fixture(scope="session")
+ def data_gif():
+     return b64decode(
+@@ -70,14 +58,6 @@ def schema_path_factory():
+     )
+ 
+ 
+-@pytest.fixture(scope="session")
+-def spec_factory(schema_path_factory):
+-    return Factory(
+-        from_file=spec_from_file,
+-        from_url=spec_from_url,
+-    )
+-
+-
+ @pytest.fixture(scope="session")
+ def v30_petstore_content(content_factory):
+     content, _ = content_factory.from_file("data/v3.0/petstore.yaml")
+diff -up python-openapi-core-0.22.0/tests/integration/schema/test_spec.py.1~ python-openapi-core-0.22.0/tests/integration/schema/test_spec.py
+--- python-openapi-core-0.22.0/tests/integration/schema/test_spec.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/tests/integration/schema/test_spec.py	2026-03-01 14:51:04.675514707 +0100
+@@ -69,13 +69,19 @@ class TestPetstore:
+             for variable_name, variable in variables.items():
+                 variable_spec = server_spec["variables"][variable_name]
+                 assert variable["default"] == variable_spec["default"]
+-                assert variable["enum"] == variable_spec.get("enum")
++                assert (variable / "enum").read_value() == variable_spec.get(
++                    "enum"
++                )
+ 
+         paths = schema_path / "paths"
+         for path_name, path in paths.items():
+             path_spec = spec_dict["paths"][path_name]
+-            assert path.getkey("summary") == path_spec.get("summary")
+-            assert path.getkey("description") == path_spec.get("description")
++            assert (path / "summary").read_str(None) == path_spec.get(
++                "summary"
++            )
++            assert (path / "description").read_str(None) == path_spec.get(
++                "description"
++            )
+ 
+             servers = path.get("servers", [])
+             servers_spec = path_spec.get("servers", [])
+@@ -89,7 +95,9 @@ class TestPetstore:
+                 for variable_name, variable in variables.items():
+                     variable_spec = server_spec["variables"][variable_name]
+                     assert variable["default"] == variable_spec["default"]
+-                    assert variable.getkey("enum") == variable_spec.get("enum")
++                    assert (
++                        variable / "enum"
++                    ).read_value() == variable_spec.get("enum")
+ 
+             operations = [
+                 "get",
+@@ -108,20 +116,22 @@ class TestPetstore:
+                 operation_spec = path_spec[http_method]
+ 
+                 assert operation["operationId"] is not None
+-                assert operation["tags"] == operation_spec["tags"]
++                assert (operation / "tags").read_str_or_list(
++                    None
++                ) == operation_spec["tags"]
+                 assert operation["summary"] == operation_spec.get("summary")
+-                assert operation.getkey("description") == operation_spec.get(
+-                    "description"
+-                )
++                assert (operation / "description").read_str(
++                    None
++                ) == operation_spec.get("description")
+ 
+                 ext_docs = operation.get("externalDocs")
+                 ext_docs_spec = operation_spec.get("externalDocs")
+                 assert bool(ext_docs_spec) == bool(ext_docs)
+                 if ext_docs_spec:
+                     assert ext_docs["url"] == ext_docs_spec["url"]
+-                    assert ext_docs.getkey("description") == ext_docs_spec.get(
+-                        "description"
+-                    )
++                    assert (ext_docs / "description").read_str(
++                        None
++                    ) == ext_docs_spec.get("description")
+ 
+                 servers = operation.get("servers", [])
+                 servers_spec = operation_spec.get("servers", [])
+@@ -137,9 +147,9 @@ class TestPetstore:
+                     for variable_name, variable in variables.items():
+                         variable_spec = server_spec["variables"][variable_name]
+                         assert variable["default"] == variable_spec["default"]
+-                        assert variable.getkey("enum") == variable_spec.get(
+-                            "enum"
+-                        )
++                        assert (
++                            variable / "enum"
++                        ).read_value() == variable_spec.get("enum")
+ 
+                 security = operation.get("security", [])
+                 security_spec = operation_spec.get("security")
+@@ -163,7 +173,9 @@ class TestPetstore:
+ 
+                     description_spec = response_spec["description"]
+ 
+-                    assert response.getkey("description") == description_spec
++                    assert (response / "description").read_str(
++                        None
++                    ) == description_spec
+ 
+                     headers = response.get("headers", {})
+                     for parameter_name, parameter in headers.items():
+@@ -182,12 +194,12 @@ class TestPetstore:
+                             continue
+ 
+                         assert schema["type"] == schema_spec["type"]
+-                        assert schema.getkey("format") == schema_spec.get(
+-                            "format"
+-                        )
+-                        assert schema.getkey("required") == schema_spec.get(
+-                            "required"
+-                        )
++                        assert (schema / "format").read_str(
++                            None
++                        ) == schema_spec.get("format")
++                        assert (schema / "required").read_str(
++                            None
++                        ) == schema_spec.get("required")
+ 
+                         content = parameter.get("content", {})
+                         content_spec = parameter_spec.get("content")
+@@ -210,12 +222,12 @@ class TestPetstore:
+                                 continue
+ 
+                             assert schema["type"] == schema_spec["type"]
+-                            assert schema.getkey("format") == schema_spec.get(
+-                                "format"
+-                            )
+-                            assert schema.getkey(
+-                                "required"
+-                            ) == schema_spec.get("required")
++                            assert (schema / "format").read_str(
++                                None
++                            ) == schema_spec.get("format")
++                            assert (
++                                schema / "required"
++                            ).read_bool() == schema_spec.get("required")
+ 
+                     content_spec = response_spec.get("content")
+ 
+@@ -227,7 +239,9 @@ class TestPetstore:
+                         content_spec = response_spec["content"][mimetype]
+ 
+                         example_spec = content_spec.get("example")
+-                        assert media_type.getkey("example") == example_spec
++                        assert (media_type / "example").read_str_or_list(
++                            None
++                        ) == example_spec
+ 
+                         schema = media_type.get("schema")
+                         schema_spec = content_spec.get("schema")
+@@ -241,9 +255,9 @@ class TestPetstore:
+                             continue
+ 
+                         assert schema["type"] == schema_spec["type"]
+-                        assert schema.getkey("required") == schema_spec.get(
+-                            "required"
+-                        )
++                        assert (schema / "required").read_bool(
++                            None
++                        ) == schema_spec.get("required")
+ 
+                 request_body = operation.get("requestBody")
+                 request_body_spec = operation_spec.get("requestBody")
+@@ -253,7 +267,7 @@ class TestPetstore:
+                     continue
+ 
+                 assert bool(
+-                    request_body.getkey("required")
++                    (request_body / "required").read_bool()
+                 ) == request_body_spec.get("required")
+ 
+                 content = request_body / "content"
+@@ -272,10 +286,12 @@ class TestPetstore:
+                     assert bool(schema_spec) == bool(schema)
+ 
+                     assert schema["type"] == schema_spec["type"]
+-                    assert schema.getkey("format") == schema_spec.get("format")
+-                    assert schema.getkey("required") == schema_spec.get(
+-                        "required"
+-                    )
++                    assert (schema / "format").read_str(
++                        None
++                    ) == schema_spec.get("format")
++                    assert (schema / "required").read_bool(
++                        None
++                    ) == schema_spec.get("required")
+ 
+         components = schema_path.get("components")
+         if not components:
+@@ -284,8 +300,12 @@ class TestPetstore:
+         schemas = components.get("schemas", {})
+         for schema_name, schema in schemas.items():
+             schema_spec = spec_dict["components"]["schemas"][schema_name]
+-            assert schema.getkey("readOnly") == schema_spec.get("readOnly")
+-            assert schema.getkey("writeOnly") == schema_spec.get("writeOnly")
++            assert (schema / "readOnly").read_bool(None) == schema_spec.get(
++                "readOnly"
++            )
++            assert (schema / "writeOnly").read_bool(None) == schema_spec.get(
++                "writeOnly"
++            )
+ 
+ 
+ class TestWebhook:
+@@ -323,7 +343,7 @@ class TestWebhook:
+ 
+         webhooks = schema_path / "webhooks"
+         webhooks_spec = spec_dict["webhooks"]
+-        assert webhooks["newPet"] == webhooks_spec["newPet"]
++        assert (webhooks / "newPet").read_value() == webhooks_spec["newPet"]
+ 
+         components = schema_path.get("components")
+         if not components:
+diff -up python-openapi-core-0.22.0/tests/unit/templating/test_paths_finders.py.1~ python-openapi-core-0.22.0/tests/unit/templating/test_paths_finders.py
+--- python-openapi-core-0.22.0/tests/unit/templating/test_paths_finders.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/tests/unit/templating/test_paths_finders.py	2026-03-01 14:51:04.674190429 +0100
+@@ -171,9 +171,7 @@ class BaseTestServerNotFound:
+     @pytest.fixture
+     def servers(self):
+         return [
+-            SchemaPath.from_dict(
+-                {"url": "http://petstore.swagger.io/resource"}
+-            )
++            {"url": "http://petstore.swagger.io/resource"},
+         ]
+ 
+     def test_raises(self, finder):
+diff -up python-openapi-core-0.22.0/tests/unit/test_app.py.1~ python-openapi-core-0.22.0/tests/unit/test_app.py
+--- python-openapi-core-0.22.0/tests/unit/test_app.py.1~	1970-01-01 01:00:00.000000000 +0100
++++ python-openapi-core-0.22.0/tests/unit/test_app.py	2026-03-01 14:51:04.675591908 +0100
+@@ -22,7 +22,7 @@ class TestOpenAPIFromPath:
+         result = OpenAPI.from_path(path)
+ 
+         assert type(result) == OpenAPI
+-        assert result.spec.contents() == spec_dict
++        assert result.spec.read_value() == spec_dict
+ 
+ 
+ class TestOpenAPIFromFilePath:
+@@ -39,7 +39,7 @@ class TestOpenAPIFromFilePath:
+         result = OpenAPI.from_file_path(file_path)
+ 
+         assert type(result) == OpenAPI
+-        assert result.spec.contents() == spec_dict
++        assert result.spec.read_value() == spec_dict
+ 
+ 
+ class TestOpenAPIFromFile:
+@@ -57,7 +57,7 @@ class TestOpenAPIFromFile:
+             result = OpenAPI.from_file(f)
+ 
+         assert type(result) == OpenAPI
+-        assert result.spec.contents() == spec_dict
++        assert result.spec.read_value() == spec_dict
+ 
+ 
+ class TestOpenAPIFromDict:
+@@ -74,4 +74,4 @@ class TestOpenAPIFromDict:
+         result = OpenAPI.from_dict(spec_dict, config=config)
+ 
+         assert type(result) == OpenAPI
+-        assert result.spec.contents() == spec_dict
++        assert result.spec.read_value() == spec_dict
+diff -up python-openapi-core-0.22.0/tests/unit/test_paths_spec.py.1~ python-openapi-core-0.22.0/tests/unit/test_paths_spec.py

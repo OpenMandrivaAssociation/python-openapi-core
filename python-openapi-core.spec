@@ -11,6 +11,10 @@ BuildRequires:	python%{pyver}dist(poetry-core)
 BuildSystem:	python
 BuildArch:	noarch
 
+%patchlist
+https://github.com/python-openapi/openapi-core/pull/1002.patch
+openapi-core-allow-newer-schame-validator.patch
+
 %description
 client-side and server-side support for the OpenAPI Specification v3
 
