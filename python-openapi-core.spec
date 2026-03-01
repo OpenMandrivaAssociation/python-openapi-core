@@ -7,6 +7,7 @@ URL:		https://pypi.org/project/openapi-core/
 License:	BSD-3-Clause
 Group:		Development/Python
 BuildRequires:	python
+BuildRequires:	python%{pyver}dist(poetry-core)
 BuildSystem:	python
 BuildArch:	noarch
 
