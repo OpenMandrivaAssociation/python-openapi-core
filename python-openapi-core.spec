@@ -3,7 +3,7 @@
 
 Name:		python-openapi-core
 Version:	0.23.1
-Release:	1
+Release:	2
 Summary:	client-side and server-side support for the OpenAPI Specification v3
 License:	BSD-3-Clause
 Group:		Development/Python
